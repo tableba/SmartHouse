@@ -30,6 +30,9 @@ export const getUsers = async (req, res, next) => {
     const userArray = [];
 
     if (users.empty) {
+      users.forEach((doc) => {
+    console.log(doc.id, doc.data());
+});
       res.status(400).send('No users found');
     } else {
       users.forEach((doc) => {
