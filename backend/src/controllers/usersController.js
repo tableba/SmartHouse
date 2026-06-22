@@ -1,7 +1,6 @@
-import firebase from '../firebase.js';
+import { db } from '../firebase.js';
 import User from '../models/userModel.js';
 import {
-  getFirestore,
   collection,
   doc,
   addDoc,
@@ -10,8 +9,6 @@ import {
   updateDoc,
   deleteDoc,
 } from 'firebase/firestore';
-
-const db = getFirestore(firebase);
 
 
 export const createUser = async (req, res, next) => {
@@ -30,9 +27,6 @@ export const getUsers = async (req, res, next) => {
     const userArray = [];
 
     if (users.empty) {
-      users.forEach((doc) => {
-    console.log(doc.id, doc.data());
-});
       res.status(400).send('No users found');
     } else {
       users.forEach((doc) => {
@@ -50,3 +44,11 @@ export const getUsers = async (req, res, next) => {
     res.status(400).send(error.message);
   }
 };
+
+export const getUser = async (req, res, next) => {}
+
+export const registerUser = async (req, res, next) => {}
+
+export const loginUser = async (req, res, next) => {}
+
+export const logoutUser = async (req, res, next) => {}
