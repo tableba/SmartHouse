@@ -16,7 +16,10 @@ export const createDevice = async (req, res, next) => {
   try {
     const device = Device.create(req.body);
     await setDoc(doc(db, "devices", device.id), device.toJSON());
-    res.status(200).send('device created successfully');
+    res.status(200).json({
+      message: "device added to database sucessfully",
+      secret: device.secret
+    });
   } catch (error) {
     res.status(400).send(error.message);
   }
@@ -55,4 +58,76 @@ export const getDevices = async (req, res, next) => {
       message: error.message
     });
   }
+}
+
+export const authentificateDevice = async (req, res, next) => {
+  // authentificates devices and makes it "online"
+  try {
+    const { id, secret } = req.body;
+    const deviceRef = doc(db, "devices", id);
+    const snapshot = await getDoc(deviceRef);
+
+    if (!snapshot.exists()) {
+      return res.status(404).json({
+        message: "Device not found"
+      });
+    }
+
+    const device = snapshot.data();
+
+    if (device.secret !== secret) {
+      return res.status(401).json({
+        message: "Invalid credentials"
+      });
+    }
+
+    await updateDoc(deviceRef, {
+      status: "online",
+      lastSeen: new Date().toISOString()
+    });
+
+    return res.status(200).json({
+      message: "Authenticated",
+      deviceId: device.id
+    });
+
+  } catch (error) {
+    return res.status(500).json({
+      message: error.message
+    });
+  }
 };
+
+export const heartBeat = async (req, res, next) => {
+  try {
+    const { id, secret } = req.body;
+    const deviceRef = doc(db, "devices", id);
+    const snapshot = await getDoc(deviceRef);
+
+    if (!snapshot.exists()) {
+      return res.status(404).json({
+        message: "Device not found"
+      });
+    }
+
+    const device = snapshot.data();
+
+    if (device.secret !== secret) {
+      return res.status(401).json({
+        message: "Invalid credentials"
+      });
+    }
+
+    await updateDoc(deviceRef, {
+      status: "online",
+      lastSeen: new Date().toISOString()
+    })
+    
+    return res.status(200).json({ message: "heartbeat ok" })
+
+  } catch (error) {
+    return res.status(500).json({
+      message: error.message
+    });
+  }
+}

@@ -1,3 +1,5 @@
+import { randomBytes } from 'crypto'
+
 class Device {
   constructor({
     id,
@@ -7,7 +9,8 @@ class Device {
     status = "offline",
     registeredAt = null,
     lastModified = null,
-    lastSeen = null
+    lastSeen = null,
+    secret
   }) {
     this.id = id;
     this.name = name;
@@ -23,17 +26,22 @@ class Device {
     this.registeredAt = registeredAt;
     this.lastModified = lastModified;
     this.lastSeen = lastSeen;
+
+    // auth
+    this.secret = secret;
   }
 
   static create(data) {
     const now = new Date().toISOString();
+    const secret = randomBytes(32).toString("hex");
 
     return new Device({
       ...data,
       status: "offline",
       registeredAt: now,
       lastModified: now,
-      lastSeen: now
+      lastSeen: now,
+      secret: secret
     });
   }
 
@@ -64,7 +72,8 @@ class Device {
       status: this.status,
       registeredAt: this.registeredAt,
       lastModified: this.lastModified,
-      lastSeen: this.lastSeen
+      lastSeen: this.lastSeen,
+      secret: this.secret
     };
   }
 }
