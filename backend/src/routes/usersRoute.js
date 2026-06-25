@@ -4,18 +4,26 @@ import {
   createUser,
   getUsers,
   getUser,
-  registerUser,
-  loginUser,
-  logoutUser
+  register,
+  login,
+  logout
 } from '../controllers/usersController.js';
+
+import { authenticateUser } from '../middleware/auth.js'
 
 const router = express.Router();
 
-router.get('/users', getUsers);
-router.get('/users/:id', getUser);
+router.get('/users',
+  authenticateUser,
+  getUsers);
+router.get('/users/:id',
+  authenticateUser,
+  getUser);
 
-router.post('/auth/register', registerUser);
-router.post('/auth/login', loginUser);
-router.post('/auth/logout', logoutUser);
+router.post('/users/register', register);
+router.post('/users/login', login);
+router.post('/users/logout',
+  authenticateUser,
+  logout);
 
 export default router;

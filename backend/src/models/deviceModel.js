@@ -6,7 +6,7 @@ class Device {
     name,
     type,
     state = {},
-    status = "offline",
+    status = "online",
     registeredAt = null,
     lastModified = null,
     lastSeen = null,
@@ -31,27 +31,53 @@ class Device {
     this.secret = secret;
   }
 
-  static create(data) {
-    const now = new Date().toISOString();
-    const secret = randomBytes(32).toString("hex");
+static create(data) {
 
-    return new Device({
-      ...data,
-      status: "offline",
-      registeredAt: now,
-      lastModified: now,
-      lastSeen: now,
-      secret: secret
-    });
+  // input validation
+  if (!data.id || typeof data.id !== "string") {
+    throw new Error("Device id is required");
   }
 
-  updateState(newState) {
-    this.state = {
-      ...this.state,
-      ...newState
-    };
+  if (!data.name || typeof data.name !== "string") {
+    throw new Error("Device name is required");
+  }
 
-    this.lastModified = new Date().toISOString();
+  if (!data.type || typeof data.type !== "string") {
+    throw new Error("Device type is required");
+  }
+
+  if (!this.isValidType(data.type)) {
+      throw new Error(`Invalid device type: ${data.type}`);
+    }
+
+  const now = new Date().toISOString();
+  const secret = randomBytes(32).toString("hex");
+
+  return new Device({
+    ...data,
+    state: data.state || {},
+    status: "offline",
+    registeredAt: now,
+    lastModified: now,
+    lastSeen: now,
+    secret
+  });
+}
+
+  static isValidType(type) {
+  // subject to change maybe
+    const validTypes = [
+      "light",
+      "door",
+      "fan",
+      "coffee_machine",
+      "temperature_sensor",
+      "motion_sensor",
+      "alarm",
+      "window"
+    ];
+
+    return validTypes.includes(type);
   }
 
   markOnline() {
