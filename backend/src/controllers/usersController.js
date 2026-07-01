@@ -1,5 +1,7 @@
 import {
   collection,
+  query,
+  where,
   doc,
   setDoc,
   addDoc,
@@ -13,16 +15,6 @@ import bcrypt from 'bcrypt';
 
 import { db } from '../firebase.js';
 import User from '../models/userModel.js';
-
-export const createUser = async (req, res, next) => {
-  try {
-    const data = req.body;
-    await addDoc(collection(db, 'users'), data);
-    res.status(200).send('user created successfully');
-  } catch (error) {
-    res.status(400).send(error.message);
-  }
-};
 
 export const getUsers = async (req, res, next) => {
   try {
@@ -38,7 +30,6 @@ export const getUsers = async (req, res, next) => {
           doc.data().email,
           doc.data().passwordHash,
           doc.data().createdAt,
-
         );
         userArray.push(user);
       });
@@ -52,26 +43,43 @@ export const getUsers = async (req, res, next) => {
 
 export const getUser = async (req, res, next) => {
   try {
-    const id = req.params.id
-    const snapshot = await getDoc(
-      doc(db, "users", id)
-    );
+    const { id } = req.params
+    const snapshot = await getDoc(collection(db, "users", id));
 
     if (!snapshot.exists()) {
-      res.status(400).send('No user found');
-    } else {
-      const user = new User(
-        doc.id,
-        doc.data().email,
-        doc.data().passwordHash,
-        doc.data().createdAt,
-      );
-    };
-    res.status(200).send(user);
+      return res.status(404).json({ message: "No user found" });
+    }
+
+    const data = snapshot.data()
+
+    const user = new User({
+      id: id,
+      email: data.email,
+      passwordHash: data.passwordHash,
+      createdAt: data.createdAt,
+    });
+
+    return res.status(200).json(user.toJSON());
+
   } catch (error) {
-    res.status(400).send(error.message);
+    return res.status(500).send(error.message)
   }
-};
+}
+
+export const deleteUser = async (req, res, next) => {
+  try {
+    const { id } = req.params
+
+    const userRef = doc(db, 'users', id)
+
+    await deleteDoc(userRef)
+
+    return res.status(200).json({ message: "successfully deleted user."})
+
+  } catch (error) {
+    return res.status(500).send(error.message)
+  }
+}
 
 export const register = async (req, res) => {
   try {
@@ -80,7 +88,7 @@ export const register = async (req, res) => {
     // hash password
     const passwordHash = await bcrypt.hash(password, 10);
 
-    await setDoc(doc(db, "users", email), {
+    await addDoc(collection(db, "users"), {
       email,
       passwordHash,
       createdAt: new Date().toISOString()
@@ -99,17 +107,21 @@ export const login = async (req, res, next) => {
   try {
     const { email, password } = req.body;
 
-    const snapshot = await getDoc(
-      doc(db, "users", email)
+    const q = query(
+      collection(db, "users"),
+      where("email", "==", email)
     );
 
-    if (!snapshot.exists()) {
+    const snapshot = await getDocs(q);
+
+    if (snapshot.empty) {
       return res.status(400).json({
         message: "User not found"
       })
     }
 
-    const user = snapshot.data()
+    const userDoc = snapshot.docs[0];
+    const user = userDoc.data();
 
     const validPassword = await bcrypt.compare(
       password,
@@ -141,5 +153,3 @@ export const login = async (req, res, next) => {
     res.status(400).send(error.message);
   }
 }
-
-export const logout = async (req, res, next) => {}

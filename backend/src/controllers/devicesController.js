@@ -63,7 +63,8 @@ export const getDevices = async (req, res, next) => {
 export const getDevice = async (req, res, next) => {
   try {
     const { id } = req.params
-    const snapshot = await getDoc(collection(db, "devices", id));
+    const deviceRef = doc(db, "devices", id)
+    const snapshot = await getDoc(deviceRef);
 
     if (!snapshot.exists()) {
       return res.status(404).json({ message: "No device found" });
@@ -193,24 +194,9 @@ export const registerDevice = async (req, res) => {
       });
     }
 
-    // device does exist in db
-    const device = snapshot.data();
-
-    if (device.secret !== secret) {
       return res.status(401).json({
-        message: "Invalid credentials"
+        message: "Device with that id already exists."
       });
-    }
-
-    await updateDoc(deviceRef, {
-      status: "online",
-      lastSeen: new Date().toISOString()
-    });
-
-    return res.status(200).json({
-      message: "Device authenticated",
-      deviceId: device.id
-    });
 
   } catch (error) {
     return res.status(500).json({
@@ -222,7 +208,15 @@ export const registerDevice = async (req, res) => {
 
 export const deleteDevice = async (req, res, next) => {
   try {
+
     const { id } = req.params
+    const deviceRef = doc(db, "devices", id)
+    const snapshot = await getDoc(deviceRef);
+
+    if (!snapshot.exists()) {
+      return res.status(404).json({ message: "Device not found" });
+    }
+
     await deleteDoc(doc(db, "devices", id));
     res.status(200).json({
       message: "device removed from the database sucessfully",
@@ -242,8 +236,6 @@ export const updateDevice = async (req, res, next) => {
     if (!snapshot.exists()) {
       return res.status(404).json({ message: "Device not found" });
     }
-
-    const data = snapshot.data()
 
     const updates = req.body
 

@@ -16,7 +16,7 @@ const router = express.Router();
 router.get('/devices',
   authenticateUser,
   getDevices);
-router.get('/devices:id',
+router.get('/devices/:id',
   authenticateUser,
   getDevice)
 router.delete('/devices/:id',
