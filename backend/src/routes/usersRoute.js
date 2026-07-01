@@ -19,7 +19,7 @@ router.get('/users/:id',
   authenticateUser,
   getUser);
 router.delete('/users/:id',
-  // authenticateUser,
+  authenticateUser,
   deleteUser);
 
 router.post('/users/register', register);
