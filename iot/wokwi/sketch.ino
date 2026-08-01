@@ -3,52 +3,335 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
+#include <DHT.h>
+#include <ESP32Servo.h>
 #include <cstring>
 
-// Wi-Fi configuration for Wokwi
+// --------------------------------------------------
+// Wi-Fi configuration
+// --------------------------------------------------
+
 const char* WIFI_SSID = "Wokwi-GUEST";
 const char* WIFI_PASSWORD = "";
 const int WIFI_CHANNEL = 6;
 
-// SmartHouse backend
+// The Ngrok URL may need to be changed later.
 const char* BASE_URL =
     "https://rimmed-crave-lip.ngrok-free.dev/api";
 
+// --------------------------------------------------
 // Timing
-const unsigned long HEARTBEAT_INTERVAL_MS = 30000;
-const unsigned long WIFI_RETRY_INTERVAL_MS = 5000;
-const unsigned long HTTP_TIMEOUT_MS = 5000;
+// --------------------------------------------------
 
-// Represents one logical smart-home device
+const unsigned long HEARTBEAT_INTERVAL_MS = 30000;
+const unsigned long REGISTRATION_RETRY_INTERVAL_MS = 60000;
+const unsigned long WIFI_RETRY_INTERVAL_MS = 5000;
+const unsigned long SENSOR_INTERVAL_MS = 2000;
+const unsigned long HTTP_TIMEOUT_MS = 8000;
+
+// --------------------------------------------------
+// ESP32 pins
+// --------------------------------------------------
+
+const int LIVING_ROOM_LIGHT_PIN = 23;
+const int KITCHEN_LIGHT_PIN = 22;
+
+const int FRONT_DOOR_SERVO_PIN = 21;
+const int BACK_DOOR_SERVO_PIN = 19;
+
+const int FAN_PIN = 18;
+const int COFFEE_MACHINE_PIN = 17;
+
+const int TEMPERATURE_SENSOR_PIN = 32;
+const int MOTION_SENSOR_PIN = 33;
+
+const int ALARM_PIN = 27;
+const int WINDOW_SERVO_PIN = 26;
+
+// --------------------------------------------------
+// Sensor configuration
+// --------------------------------------------------
+
+#define DHT_TYPE DHT22
+
+DHT temperatureSensor(TEMPERATURE_SENSOR_PIN, DHT_TYPE);
+
+Servo frontDoorServo;
+Servo backDoorServo;
+Servo windowServo;
+
+Preferences preferences;
+
+// --------------------------------------------------
+// Device models
+// --------------------------------------------------
+
+enum DeviceKind {
+  LIGHT,
+  DOOR,
+  FAN,
+  COFFEE_MACHINE,
+  TEMPERATURE_SENSOR,
+  MOTION_SENSOR,
+  ALARM,
+  WINDOW
+};
+
 struct DeviceConfig {
   const char* id;
   const char* name;
   const char* type;
+  DeviceKind kind;
 };
 
-// One ESP32 manages all 10 logical devices
+struct DeviceState {
+  bool power;
+  int brightness;
+
+  bool open;
+
+  int speed;
+
+  bool brewing;
+
+  float temperature;
+
+  bool motion;
+
+  bool active;
+};
+
+// One ESP32 manages all 10 logical devices.
 DeviceConfig devices[] = {
-  {"light001",  "Living Room Light",   "light"},
-  {"light002",  "Kitchen Light",       "light"},
-  {"door001",   "Front Door",          "door"},
-  {"door002",   "Back Door",           "door"},
-  {"fan001",    "Bedroom Fan",         "fan"},
-  {"coffee001", "Kitchen Coffee Maker","coffee_machine"},
-  {"temp001",   "Living Room Temperature", "temperature_sensor"},
-  {"motion001", "Hall Motion Sensor",  "motion_sensor"},
-  {"alarm001",  "Home Alarm",          "alarm"},
-  {"window001", "Bedroom Window",      "window"}
+  {
+    "light001",
+    "Living Room Light",
+    "light",
+    LIGHT
+  },
+  {
+    "light002",
+    "Kitchen Light",
+    "light",
+    LIGHT
+  },
+  {
+    "door001",
+    "Front Door",
+    "door",
+    DOOR
+  },
+  {
+    "door002",
+    "Back Door",
+    "door",
+    DOOR
+  },
+  {
+    "fan001",
+    "Bedroom Fan",
+    "fan",
+    FAN
+  },
+  {
+    "coffee001",
+    "Kitchen Coffee Machine",
+    "coffee_machine",
+    COFFEE_MACHINE
+  },
+  {
+    "temp001",
+    "Living Room Temperature Sensor",
+    "temperature_sensor",
+    TEMPERATURE_SENSOR
+  },
+  {
+    "motion001",
+    "Hall Motion Sensor",
+    "motion_sensor",
+    MOTION_SENSOR
+  },
+  {
+    "alarm001",
+    "Home Alarm",
+    "alarm",
+    ALARM
+  },
+  {
+    "window001",
+    "Bedroom Window",
+    "window",
+    WINDOW
+  }
 };
 
 const size_t DEVICE_COUNT =
     sizeof(devices) / sizeof(devices[0]);
 
-Preferences preferences;
+DeviceState deviceStates[DEVICE_COUNT];
+
+// --------------------------------------------------
+// Runtime timing variables
+// --------------------------------------------------
 
 unsigned long lastHeartbeatTime = 0;
+unsigned long lastRegistrationRetryTime = 0;
 unsigned long lastWiFiRetryTime = 0;
+unsigned long lastSensorReadTime = 0;
 
-// Connect the ESP32 to Wokwi Wi-Fi
+// --------------------------------------------------
+// Initial device states
+// --------------------------------------------------
+
+void initializeDeviceStates() {
+  for (size_t index = 0; index < DEVICE_COUNT; index++) {
+    deviceStates[index] = DeviceState{};
+  }
+
+  // light001
+  deviceStates[0].power = false;
+  deviceStates[0].brightness = 0;
+
+  // light002
+  deviceStates[1].power = false;
+  deviceStates[1].brightness = 0;
+
+  // door001
+  deviceStates[2].open = false;
+
+  // door002
+  deviceStates[3].open = false;
+
+  // fan001
+  deviceStates[4].power = false;
+  deviceStates[4].speed = 0;
+
+  // coffee001
+  deviceStates[5].power = false;
+  deviceStates[5].brewing = false;
+
+  // temp001
+  deviceStates[6].temperature = 22.0;
+
+  // motion001
+  deviceStates[7].motion = false;
+
+  // alarm001
+  deviceStates[8].active = false;
+
+  // window001
+  deviceStates[9].open = false;
+}
+
+// --------------------------------------------------
+// Hardware setup and output control
+// --------------------------------------------------
+
+void setupHardware() {
+  pinMode(LIVING_ROOM_LIGHT_PIN, OUTPUT);
+  pinMode(KITCHEN_LIGHT_PIN, OUTPUT);
+
+  pinMode(FAN_PIN, OUTPUT);
+  pinMode(COFFEE_MACHINE_PIN, OUTPUT);
+
+  pinMode(MOTION_SENSOR_PIN, INPUT);
+  pinMode(ALARM_PIN, OUTPUT);
+
+  frontDoorServo.setPeriodHertz(50);
+  backDoorServo.setPeriodHertz(50);
+  windowServo.setPeriodHertz(50);
+
+  frontDoorServo.attach(
+      FRONT_DOOR_SERVO_PIN,
+      500,
+      2400
+  );
+
+  backDoorServo.attach(
+      BACK_DOOR_SERVO_PIN,
+      500,
+      2400
+  );
+
+  windowServo.attach(
+      WINDOW_SERVO_PIN,
+      500,
+      2400
+  );
+
+  temperatureSensor.begin();
+}
+
+void applyDeviceStates() {
+  digitalWrite(
+      LIVING_ROOM_LIGHT_PIN,
+      deviceStates[0].power ? HIGH : LOW
+  );
+
+  digitalWrite(
+      KITCHEN_LIGHT_PIN,
+      deviceStates[1].power ? HIGH : LOW
+  );
+
+  frontDoorServo.write(
+      deviceStates[2].open ? 90 : 0
+  );
+
+  backDoorServo.write(
+      deviceStates[3].open ? 90 : 0
+  );
+
+  digitalWrite(
+      FAN_PIN,
+      deviceStates[4].power ? HIGH : LOW
+  );
+
+  digitalWrite(
+      COFFEE_MACHINE_PIN,
+      deviceStates[5].power ||
+      deviceStates[5].brewing
+          ? HIGH
+          : LOW
+  );
+
+  if (deviceStates[8].active) {
+    tone(ALARM_PIN, 1000);
+  } else {
+    noTone(ALARM_PIN);
+  }
+
+  windowServo.write(
+      deviceStates[9].open ? 90 : 0
+  );
+}
+
+// --------------------------------------------------
+// Sensor reading
+// --------------------------------------------------
+
+void readSensors() {
+  float temperature =
+      temperatureSensor.readTemperature();
+
+  if (!isnan(temperature)) {
+    deviceStates[6].temperature = temperature;
+  }
+
+  deviceStates[7].motion =
+      digitalRead(MOTION_SENSOR_PIN) == HIGH;
+
+  Serial.print("Temperature: ");
+  Serial.print(deviceStates[6].temperature);
+  Serial.print(" C, Motion: ");
+  Serial.println(
+      deviceStates[7].motion ? "true" : "false"
+  );
+}
+
+// --------------------------------------------------
+// Wi-Fi
+// --------------------------------------------------
+
 bool connectToWiFi() {
   if (WiFi.status() == WL_CONNECTED) {
     return true;
@@ -57,12 +340,19 @@ bool connectToWiFi() {
   Serial.print("Connecting to WiFi");
 
   WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD, WIFI_CHANNEL);
+
+  WiFi.begin(
+      WIFI_SSID,
+      WIFI_PASSWORD,
+      WIFI_CHANNEL
+  );
 
   const unsigned long startTime = millis();
 
-  while (WiFi.status() != WL_CONNECTED &&
-         millis() - startTime < 20000) {
+  while (
+      WiFi.status() != WL_CONNECTED &&
+      millis() - startTime < 20000
+  ) {
     delay(250);
     Serial.print(".");
   }
@@ -75,71 +365,119 @@ bool connectToWiFi() {
   }
 
   Serial.println("WiFi connected");
+
   Serial.print("IP address: ");
   Serial.println(WiFi.localIP());
 
   return true;
 }
 
-// Add the correct initial state according to device type
-void addInitialState(
-    const DeviceConfig& device,
-    JsonObject state) {
+// --------------------------------------------------
+// JSON state generation
+// --------------------------------------------------
 
-  if (strcmp(device.type, "light") == 0) {
-    state["power"] = false;
-    state["brightness"] = 0;
-  }
+void addStateToJson(
+    size_t deviceIndex,
+    JsonObject state
+) {
+  DeviceKind kind = devices[deviceIndex].kind;
 
-  else if (strcmp(device.type, "door") == 0) {
-    state["open"] = false;
-  }
+  switch (kind) {
+    case LIGHT:
+      state["power"] =
+          deviceStates[deviceIndex].power;
 
-  else if (strcmp(device.type, "fan") == 0) {
-    state["power"] = false;
-    state["speed"] = 0;
-  }
+      state["brightness"] =
+          deviceStates[deviceIndex].brightness;
+      break;
 
-  else if (strcmp(device.type, "coffee_machine") == 0) {
-    state["power"] = false;
-    state["brewing"] = false;
-  }
+    case DOOR:
+      state["open"] =
+          deviceStates[deviceIndex].open;
+      break;
 
-  else if (strcmp(device.type, "temperature_sensor") == 0) {
-    state["temperature"] = 22.0;
-  }
+    case FAN:
+      state["power"] =
+          deviceStates[deviceIndex].power;
 
-  else if (strcmp(device.type, "motion_sensor") == 0) {
-    state["motion"] = false;
-  }
+      state["speed"] =
+          deviceStates[deviceIndex].speed;
+      break;
 
-  else if (strcmp(device.type, "alarm") == 0) {
-    state["active"] = false;
-  }
+    case COFFEE_MACHINE:
+      state["power"] =
+          deviceStates[deviceIndex].power;
 
-  else if (strcmp(device.type, "window") == 0) {
-    state["open"] = false;
+      state["brewing"] =
+          deviceStates[deviceIndex].brewing;
+      break;
+
+    case TEMPERATURE_SENSOR:
+      state["temperature"] =
+          deviceStates[deviceIndex].temperature;
+      break;
+
+    case MOTION_SENSOR:
+      state["motion"] =
+          deviceStates[deviceIndex].motion;
+      break;
+
+    case ALARM:
+      state["active"] =
+          deviceStates[deviceIndex].active;
+      break;
+
+    case WINDOW:
+      state["open"] =
+          deviceStates[deviceIndex].open;
+      break;
   }
 }
 
-// Read a stored secret for a device
+// --------------------------------------------------
+// Device secret storage
+// --------------------------------------------------
+
 String getStoredSecret(const char* deviceId) {
   return preferences.getString(deviceId, "");
 }
 
-// Register one device if it does not already have a secret
-bool registerDevice(const DeviceConfig& device) {
-  String existingSecret = getStoredSecret(device.id);
+bool hasMissingDeviceSecrets() {
+  for (size_t index = 0; index < DEVICE_COUNT; index++) {
+    if (getStoredSecret(devices[index].id).length() == 0) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+// --------------------------------------------------
+// Device registration
+// --------------------------------------------------
+
+bool registerDevice(size_t deviceIndex) {
+  const DeviceConfig& device =
+      devices[deviceIndex];
+
+  String existingSecret =
+      getStoredSecret(device.id);
 
   if (existingSecret.length() > 0) {
     Serial.print(device.id);
-    Serial.println(": stored secret found, registration skipped");
+    Serial.println(
+        ": stored secret found, registration skipped"
+    );
+
     return true;
   }
 
   if (WiFi.status() != WL_CONNECTED) {
     Serial.print(device.id);
-    Serial.println(": registration skipped because WiFi is unavailable");
+    Serial.println(
+        ": registration skipped because WiFi is unavailable"
+    );
+
     return false;
   }
 
@@ -148,16 +486,23 @@ bool registerDevice(const DeviceConfig& device) {
 
   HTTPClient http;
 
-  String url = String(BASE_URL) + "/devices/register";
+  String url =
+      String(BASE_URL) + "/devices/register";
 
   if (!http.begin(secureClient, url)) {
     Serial.print(device.id);
-    Serial.println(": unable to start registration request");
+    Serial.println(
+        ": unable to create registration request"
+    );
+
     return false;
   }
 
   http.setTimeout(HTTP_TIMEOUT_MS);
-  http.addHeader("Content-Type", "application/json");
+  http.addHeader(
+      "Content-Type",
+      "application/json"
+  );
 
   JsonDocument requestDocument;
 
@@ -168,15 +513,19 @@ bool registerDevice(const DeviceConfig& device) {
   JsonObject state =
       requestDocument["state"].to<JsonObject>();
 
-  addInitialState(device, state);
+  addStateToJson(deviceIndex, state);
 
   String requestBody;
-  serializeJson(requestDocument, requestBody);
+  serializeJson(
+      requestDocument,
+      requestBody
+  );
 
   Serial.print("Registering ");
   Serial.println(device.id);
 
-  int statusCode = http.POST(requestBody);
+  int statusCode =
+      http.POST(requestBody);
 
   String responseBody;
 
@@ -189,7 +538,10 @@ bool registerDevice(const DeviceConfig& device) {
   Serial.print(": ");
   Serial.println(statusCode);
 
-  if (statusCode < 200 || statusCode >= 300) {
+  if (
+      statusCode < 200 ||
+      statusCode >= 300
+  ) {
     if (responseBody.length() > 0) {
       Serial.print("Server response: ");
       Serial.println(responseBody);
@@ -202,11 +554,17 @@ bool registerDevice(const DeviceConfig& device) {
   JsonDocument responseDocument;
 
   DeserializationError jsonError =
-      deserializeJson(responseDocument, responseBody);
+      deserializeJson(
+          responseDocument,
+          responseBody
+      );
 
   if (jsonError) {
     Serial.print(device.id);
-    Serial.println(": invalid registration response");
+    Serial.println(
+        ": invalid registration response"
+    );
+
     http.end();
     return false;
   }
@@ -216,44 +574,68 @@ bool registerDevice(const DeviceConfig& device) {
 
   if (receivedSecret.length() == 0) {
     Serial.print(device.id);
-    Serial.println(": registration response contained no secret");
+    Serial.println(
+        ": registration response contained no secret"
+    );
+
     http.end();
     return false;
   }
 
-  preferences.putString(device.id, receivedSecret);
+  preferences.putString(
+      device.id,
+      receivedSecret
+  );
 
   Serial.print(device.id);
-  Serial.println(": registered and secret stored");
+  Serial.println(
+      ": registered and secret stored"
+  );
 
   http.end();
   return true;
 }
 
-// Register all devices that do not yet have stored secrets
 void registerMissingDevices() {
   Serial.println();
   Serial.println("Checking device registrations");
 
-  for (size_t index = 0; index < DEVICE_COUNT; index++) {
-    registerDevice(devices[index]);
-    delay(250);
+  for (
+      size_t index = 0;
+      index < DEVICE_COUNT;
+      index++
+  ) {
+    registerDevice(index);
+    delay(200);
   }
 }
 
-// Send one heartbeat
-bool sendHeartbeat(const DeviceConfig& device) {
-  String deviceSecret = getStoredSecret(device.id);
+// --------------------------------------------------
+// Heartbeat
+// --------------------------------------------------
+
+bool sendHeartbeat(size_t deviceIndex) {
+  const DeviceConfig& device =
+      devices[deviceIndex];
+
+  String deviceSecret =
+      getStoredSecret(device.id);
 
   if (deviceSecret.length() == 0) {
     Serial.print(device.id);
-    Serial.println(": heartbeat skipped because no secret is stored");
+    Serial.println(
+        ": heartbeat skipped because no secret is stored"
+    );
+
     return false;
   }
 
   if (WiFi.status() != WL_CONNECTED) {
     Serial.print(device.id);
-    Serial.println(": heartbeat skipped because WiFi is unavailable");
+    Serial.println(
+        ": heartbeat skipped because WiFi is unavailable"
+    );
+
     return false;
   }
 
@@ -262,16 +644,23 @@ bool sendHeartbeat(const DeviceConfig& device) {
 
   HTTPClient http;
 
-  String url = String(BASE_URL) + "/devices/heartbeat";
+  String url =
+      String(BASE_URL) + "/devices/heartbeat";
 
   if (!http.begin(secureClient, url)) {
     Serial.print(device.id);
-    Serial.println(": unable to start heartbeat request");
+    Serial.println(
+        ": unable to create heartbeat request"
+    );
+
     return false;
   }
 
   http.setTimeout(HTTP_TIMEOUT_MS);
-  http.addHeader("Content-Type", "application/json");
+  http.addHeader(
+      "Content-Type",
+      "application/json"
+  );
 
   JsonDocument requestDocument;
 
@@ -279,9 +668,13 @@ bool sendHeartbeat(const DeviceConfig& device) {
   requestDocument["secret"] = deviceSecret;
 
   String requestBody;
-  serializeJson(requestDocument, requestBody);
+  serializeJson(
+      requestDocument,
+      requestBody
+  );
 
-  int statusCode = http.POST(requestBody);
+  int statusCode =
+      http.POST(requestBody);
 
   String responseBody;
 
@@ -294,7 +687,10 @@ bool sendHeartbeat(const DeviceConfig& device) {
   Serial.print(": ");
   Serial.println(statusCode);
 
-  if (statusCode < 200 || statusCode >= 300) {
+  if (
+      statusCode < 200 ||
+      statusCode >= 300
+  ) {
     if (responseBody.length() > 0) {
       Serial.print("Server response: ");
       Serial.println(responseBody);
@@ -308,28 +704,40 @@ bool sendHeartbeat(const DeviceConfig& device) {
   return true;
 }
 
-// Send heartbeat for all registered devices
 void sendAllHeartbeats() {
   Serial.println();
   Serial.println("Sending device heartbeats");
 
-  for (size_t index = 0; index < DEVICE_COUNT; index++) {
-    sendHeartbeat(devices[index]);
-    delay(250);
+  for (
+      size_t index = 0;
+      index < DEVICE_COUNT;
+      index++
+  ) {
+    sendHeartbeat(index);
+    delay(200);
   }
 
   Serial.println("Heartbeat cycle completed");
 }
 
-// This part cannot be completed until the backend developer
-// provides the exact command and state-update endpoints.
+// --------------------------------------------------
+// Backend commands
+// --------------------------------------------------
+
+// Antoine has not implemented the command endpoint yet.
+// This function will be completed after the backend update.
 void handleBackendCommands() {
-  // TODO:
-  // 1. Request commands from the backend.
+  // Future implementation:
+  // 1. Retrieve commands through HTTP.
   // 2. Validate the received JSON.
-  // 3. Update the correct simulated device.
-  // 4. Report the updated state to the backend.
+  // 3. Update the correct DeviceState.
+  // 4. Call applyDeviceStates().
+  // 5. Report the new state to the backend.
 }
+
+// --------------------------------------------------
+// Arduino setup
+// --------------------------------------------------
 
 void setup() {
   Serial.begin(115200);
@@ -338,31 +746,54 @@ void setup() {
   Serial.println();
   Serial.println("SmartHouse IoT starting");
 
-  preferences.begin("smarthouse", false);
+  initializeDeviceStates();
+  setupHardware();
+  applyDeviceStates();
 
-  // Use only if Antoine deletes all registered IoT devices
-  // and you intentionally need to register them again:
+  preferences.begin(
+      "smarthouse",
+      false
+  );
+
+  /*
+   * Use preferences.clear() only if Antoine deletes
+   * the registered devices from the backend and you
+   * intentionally need to register all devices again.
+   */
   // preferences.clear();
+
+  delay(1000);
+  readSensors();
 
   if (connectToWiFi()) {
     registerMissingDevices();
-
     sendAllHeartbeats();
+
     lastHeartbeatTime = millis();
+    lastRegistrationRetryTime = millis();
   }
 }
 
-void loop() {
-  if (WiFi.status() != WL_CONNECTED) {
-    if (millis() - lastWiFiRetryTime >=
-        WIFI_RETRY_INTERVAL_MS) {
+// --------------------------------------------------
+// Arduino loop
+// --------------------------------------------------
 
-      lastWiFiRetryTime = millis();
+void loop() {
+  unsigned long currentTime = millis();
+
+  if (WiFi.status() != WL_CONNECTED) {
+    if (
+        currentTime - lastWiFiRetryTime >=
+        WIFI_RETRY_INTERVAL_MS
+    ) {
+      lastWiFiRetryTime = currentTime;
 
       if (connectToWiFi()) {
         registerMissingDevices();
         sendAllHeartbeats();
+
         lastHeartbeatTime = millis();
+        lastRegistrationRetryTime = millis();
       }
     }
 
@@ -370,14 +801,36 @@ void loop() {
     return;
   }
 
-  if (millis() - lastHeartbeatTime >=
-      HEARTBEAT_INTERVAL_MS) {
+  if (
+      currentTime - lastSensorReadTime >=
+      SENSOR_INTERVAL_MS
+  ) {
+    lastSensorReadTime = currentTime;
 
-    lastHeartbeatTime = millis();
+    readSensors();
+  }
+
+  if (
+      hasMissingDeviceSecrets() &&
+      currentTime - lastRegistrationRetryTime >=
+          REGISTRATION_RETRY_INTERVAL_MS
+  ) {
+    lastRegistrationRetryTime = currentTime;
+
+    registerMissingDevices();
+  }
+
+  if (
+      currentTime - lastHeartbeatTime >=
+      HEARTBEAT_INTERVAL_MS
+  ) {
+    lastHeartbeatTime = currentTime;
+
     sendAllHeartbeats();
   }
 
   handleBackendCommands();
+  applyDeviceStates();
 
   delay(100);
 }
