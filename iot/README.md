@@ -28,3 +28,7 @@ Android application -> Backend server -> Wokwi IoT devices
 ## Current limitation
 
 Backend command handling is not implemented yet because the required backend endpoint is not available. It will be added after the backend is updated.
+
+## Wokwi simulation
+
+https://wokwi.com/projects/471094983884003329
