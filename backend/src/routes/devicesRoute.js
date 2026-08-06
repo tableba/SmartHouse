@@ -13,6 +13,10 @@ import { authenticateUser } from '../middleware/auth.js'
 
 const router = express.Router();
 
+// for iot only, best compromise for now
+router.get('/devices/states', getDevices);
+
+// proteced
 router.get('/devices',
   authenticateUser,
   getDevices);
@@ -26,7 +30,9 @@ router.put('/devices/:id',
   authenticateUser,
   updateDevice);
 
+// unprotected
 router.post('/devices/register', registerDevice);
 router.post('/devices/heartbeat', heartBeat);
+
 
 export default router;
