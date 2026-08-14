@@ -25,10 +25,19 @@ Android application -> Backend server -> Wokwi IoT devices
 - Heartbeat requests are sent every 30 seconds
 - Wi-Fi and backend failures are handled without crashing
 
-## Current limitation
+## Backend simulation
 
-Backend command handling is not implemented yet because the required backend endpoint is not available. It will be added after the backend is updated.
+Backend communication is implemented using the documented device registration, heartbeat, and device state flow.
 
+For the Wokwi demonstration, mock backend endpoints are currently used because the Wokwi Free plan cannot access the local backend through the Private IoT Gateway.
+
+The mock implementation simulates:
+
+- POST /devices/register
+- POST /devices/heartbeat
+- GET /devices/states
+
+This allows all 10 simulated devices to register, send heartbeats, receive desired states, and update their Wokwi hardware states.
 ## Wokwi simulation
 
 https://wokwi.com/projects/471094983884003329
