@@ -1,4 +1,6 @@
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
 #include <DHT.h>
@@ -6,7 +8,7 @@
 #include <cstring>
 
 // --------------------------------------------------
-// Wi-Fi configuration
+// Wi-Fi
 // --------------------------------------------------
 
 const char* WIFI_SSID = "Wokwi-GUEST";
@@ -14,12 +16,13 @@ const char* WIFI_PASSWORD = "";
 const int WIFI_CHANNEL = 6;
 
 // --------------------------------------------------
-// Mock backend configuration
+// Backend
 // --------------------------------------------------
 
-// Backend is simulated locally inside the ESP32 code.
-// No Ngrok or Private Wokwi Gateway is required.
-const bool USE_MOCK_BACKEND = true;
+// IMPORTANT:
+// If Cloudflare Tunnel is restarted, this URL may change.
+const char* BACKEND_BASE_URL =
+  "https://settings-auburn-canberra-out.trycloudflare.com/api";
 
 // --------------------------------------------------
 // Timing
@@ -30,7 +33,7 @@ const unsigned long STATE_POLL_INTERVAL_MS = 3000;
 const unsigned long SENSOR_INTERVAL_MS = 2000;
 
 // --------------------------------------------------
-// ESP32 pins
+// Pins
 // --------------------------------------------------
 
 const int LIVING_ROOM_LIGHT_PIN = 23;
@@ -49,14 +52,14 @@ const int ALARM_PIN = 27;
 const int WINDOW_SERVO_PIN = 26;
 
 // --------------------------------------------------
-// Sensors and actuators
+// Hardware
 // --------------------------------------------------
 
 #define DHT_TYPE DHT22
 
 DHT temperatureSensor(
-    TEMPERATURE_SENSOR_PIN,
-    DHT_TYPE
+  TEMPERATURE_SENSOR_PIN,
+  DHT_TYPE
 );
 
 Servo frontDoorServo;
@@ -66,7 +69,7 @@ Servo windowServo;
 Preferences preferences;
 
 // --------------------------------------------------
-// Device models
+// Device definitions
 // --------------------------------------------------
 
 enum DeviceKind {
@@ -88,24 +91,24 @@ struct DeviceConfig {
 };
 
 struct DeviceState {
-  bool power;
-  int brightness;
+  bool power = false;
+  int brightness = 0;
 
-  bool open;
+  bool open = false;
 
-  int speed;
+  int speed = 0;
 
-  bool brewing;
+  bool brewing = false;
 
-  float temperature;
+  float temperature = 22.0;
 
-  bool motion;
+  bool motion = false;
 
-  bool active;
+  bool active = false;
 };
 
 // --------------------------------------------------
-// 10 logical SmartHouse devices
+// 10 SmartHouse devices
 // --------------------------------------------------
 
 DeviceConfig devices[] = {
@@ -172,7 +175,7 @@ DeviceConfig devices[] = {
 };
 
 const size_t DEVICE_COUNT =
-    sizeof(devices) / sizeof(devices[0]);
+  sizeof(devices) / sizeof(devices[0]);
 
 DeviceState deviceStates[DEVICE_COUNT];
 
@@ -184,53 +187,49 @@ unsigned long lastHeartbeatTime = 0;
 unsigned long lastStatePollTime = 0;
 unsigned long lastSensorReadTime = 0;
 
-// Used to change mock states between requests.
-unsigned int mockStateStep = 0;
-
 // --------------------------------------------------
-// Initial device states
+// Wi-Fi
 // --------------------------------------------------
 
-void initializeDeviceStates() {
-  for (
-      size_t index = 0;
-      index < DEVICE_COUNT;
-      index++
-  ) {
-    deviceStates[index] =
-        DeviceState{};
+bool connectToWiFi() {
+
+  if (WiFi.status() == WL_CONNECTED) {
+    return true;
   }
 
-  // Lights
-  deviceStates[0].power = false;
-  deviceStates[0].brightness = 0;
+  Serial.print("Connecting to WiFi");
 
-  deviceStates[1].power = false;
-  deviceStates[1].brightness = 0;
+  WiFi.mode(WIFI_STA);
 
-  // Doors
-  deviceStates[2].open = false;
-  deviceStates[3].open = false;
+  WiFi.begin(
+    WIFI_SSID,
+    WIFI_PASSWORD,
+    WIFI_CHANNEL
+  );
 
-  // Fan
-  deviceStates[4].power = false;
-  deviceStates[4].speed = 0;
+  unsigned long startTime = millis();
 
-  // Coffee machine
-  deviceStates[5].power = false;
-  deviceStates[5].brewing = false;
+  while (
+    WiFi.status() != WL_CONNECTED &&
+    millis() - startTime < 20000
+  ) {
+    delay(250);
+    Serial.print(".");
+  }
 
-  // Temperature sensor
-  deviceStates[6].temperature = 22.0;
+  Serial.println();
 
-  // Motion sensor
-  deviceStates[7].motion = false;
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi connection failed");
+    return false;
+  }
 
-  // Alarm
-  deviceStates[8].active = false;
+  Serial.println("WiFi connected");
 
-  // Window
-  deviceStates[9].open = false;
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
+
+  return true;
 }
 
 // --------------------------------------------------
@@ -238,34 +237,35 @@ void initializeDeviceStates() {
 // --------------------------------------------------
 
 void setupHardware() {
+
   pinMode(
-      LIVING_ROOM_LIGHT_PIN,
-      OUTPUT
+    LIVING_ROOM_LIGHT_PIN,
+    OUTPUT
   );
 
   pinMode(
-      KITCHEN_LIGHT_PIN,
-      OUTPUT
+    KITCHEN_LIGHT_PIN,
+    OUTPUT
   );
 
   pinMode(
-      FAN_PIN,
-      OUTPUT
+    FAN_PIN,
+    OUTPUT
   );
 
   pinMode(
-      COFFEE_MACHINE_PIN,
-      OUTPUT
+    COFFEE_MACHINE_PIN,
+    OUTPUT
   );
 
   pinMode(
-      MOTION_SENSOR_PIN,
-      INPUT
+    MOTION_SENSOR_PIN,
+    INPUT
   );
 
   pinMode(
-      ALARM_PIN,
-      OUTPUT
+    ALARM_PIN,
+    OUTPUT
   );
 
   frontDoorServo.setPeriodHertz(50);
@@ -273,98 +273,93 @@ void setupHardware() {
   windowServo.setPeriodHertz(50);
 
   frontDoorServo.attach(
-      FRONT_DOOR_SERVO_PIN,
-      500,
-      2400
+    FRONT_DOOR_SERVO_PIN,
+    500,
+    2400
   );
 
   backDoorServo.attach(
-      BACK_DOOR_SERVO_PIN,
-      500,
-      2400
+    BACK_DOOR_SERVO_PIN,
+    500,
+    2400
   );
 
   windowServo.attach(
-      WINDOW_SERVO_PIN,
-      500,
-      2400
+    WINDOW_SERVO_PIN,
+    500,
+    2400
   );
 
   temperatureSensor.begin();
 }
 
 // --------------------------------------------------
-// Apply device states to Wokwi hardware
+// Apply states to Wokwi hardware
 // --------------------------------------------------
 
 void applyDeviceStates() {
 
-  // Living room light
   digitalWrite(
-      LIVING_ROOM_LIGHT_PIN,
-      deviceStates[0].power
-          ? HIGH
-          : LOW
+    LIVING_ROOM_LIGHT_PIN,
+    deviceStates[0].power
+      ? HIGH
+      : LOW
   );
 
-  // Kitchen light
   digitalWrite(
-      KITCHEN_LIGHT_PIN,
-      deviceStates[1].power
-          ? HIGH
-          : LOW
+    KITCHEN_LIGHT_PIN,
+    deviceStates[1].power
+      ? HIGH
+      : LOW
   );
 
-  // Front door
   frontDoorServo.write(
-      deviceStates[2].open
-          ? 90
-          : 0
+    deviceStates[2].open
+      ? 90
+      : 0
   );
 
-  // Back door
   backDoorServo.write(
-      deviceStates[3].open
-          ? 90
-          : 0
+    deviceStates[3].open
+      ? 90
+      : 0
   );
 
-  // Fan
   digitalWrite(
-      FAN_PIN,
-      deviceStates[4].power
-          ? HIGH
-          : LOW
+    FAN_PIN,
+    deviceStates[4].power
+      ? HIGH
+      : LOW
   );
 
-  // Coffee machine
   digitalWrite(
-      COFFEE_MACHINE_PIN,
-      (
-        deviceStates[5].power ||
-        deviceStates[5].brewing
-      )
-          ? HIGH
-          : LOW
+    COFFEE_MACHINE_PIN,
+    (
+      deviceStates[5].power ||
+      deviceStates[5].brewing
+    )
+      ? HIGH
+      : LOW
   );
 
-  // Alarm
   if (deviceStates[8].active) {
+
     tone(
-        ALARM_PIN,
-        1000
+      ALARM_PIN,
+      1000
     );
+
   } else {
+
     noTone(
-        ALARM_PIN
+      ALARM_PIN
     );
   }
 
-  // Window
   windowServo.write(
-      deviceStates[9].open
-          ? 90
-          : 0
+    deviceStates[9].open
+      ? 90
+      : 0
   );
 }
 
@@ -373,134 +368,62 @@ void applyDeviceStates() {
 // --------------------------------------------------
 
 void readSensors() {
+
   float temperature =
-      temperatureSensor.readTemperature();
+    temperatureSensor.readTemperature();
 
   if (!isnan(temperature)) {
+
     deviceStates[6].temperature =
-        temperature;
+      temperature;
   }
 
   deviceStates[7].motion =
-      digitalRead(
-          MOTION_SENSOR_PIN
-      ) == HIGH;
+    digitalRead(
+      MOTION_SENSOR_PIN
+    ) == HIGH;
+
+  Serial.print("Temperature: ");
 
   Serial.print(
-      "Temperature: "
+    deviceStates[6].temperature
   );
 
-  Serial.print(
-      deviceStates[6].temperature
-  );
-
-  Serial.print(
-      " C, Motion: "
-  );
+  Serial.print(" C, Motion: ");
 
   Serial.println(
-      deviceStates[7].motion
-          ? "true"
-          : "false"
+    deviceStates[7].motion
+      ? "true"
+      : "false"
   );
 }
 
 // --------------------------------------------------
-// Wi-Fi
-// --------------------------------------------------
-
-bool connectToWiFi() {
-  if (
-      WiFi.status() ==
-      WL_CONNECTED
-  ) {
-    return true;
-  }
-
-  Serial.print(
-      "Connecting to WiFi"
-  );
-
-  WiFi.mode(
-      WIFI_STA
-  );
-
-  WiFi.begin(
-      WIFI_SSID,
-      WIFI_PASSWORD,
-      WIFI_CHANNEL
-  );
-
-  unsigned long startTime =
-      millis();
-
-  while (
-      WiFi.status() !=
-          WL_CONNECTED &&
-      millis() - startTime <
-          20000
-  ) {
-    delay(250);
-
-    Serial.print(".");
-  }
-
-  Serial.println();
-
-  if (
-      WiFi.status() !=
-      WL_CONNECTED
-  ) {
-    Serial.println(
-        "WiFi connection failed"
-    );
-
-    return false;
-  }
-
-  Serial.println(
-      "WiFi connected"
-  );
-
-  Serial.print(
-      "IP address: "
-  );
-
-  Serial.println(
-      WiFi.localIP()
-  );
-
-  return true;
-}
-
-// --------------------------------------------------
-// Find device by ID
+// Find device
 // --------------------------------------------------
 
 int findDeviceIndex(
-    const char* deviceId
+  const char* deviceId
 ) {
-  if (
-      deviceId == nullptr
-  ) {
+
+  if (deviceId == nullptr) {
     return -1;
   }
 
   for (
-      size_t index = 0;
-      index < DEVICE_COUNT;
-      index++
+    size_t i = 0;
+    i < DEVICE_COUNT;
+    i++
   ) {
+
     if (
-        strcmp(
-            devices[index].id,
-            deviceId
-        ) == 0
+      strcmp(
+        devices[i].id,
+        deviceId
+      ) == 0
     ) {
-      return
-          static_cast<int>(
-              index
-          );
+
+      return i;
     }
   }
 
@@ -508,201 +431,495 @@ int findDeviceIndex(
 }
 
 // --------------------------------------------------
-// MOCK: Device registration endpoint
-// POST /devices/register
+// HTTPS helper
+// --------------------------------------------------
+
+String makeUrl(
+  const char* endpoint
+) {
+
+  String url =
+    BACKEND_BASE_URL;
+
+  url += endpoint;
+
+  return url;
+}
+
+// --------------------------------------------------
+// Create registration state
+// --------------------------------------------------
+
+void createRegistrationState(
+  size_t index,
+  JsonObject state
+) {
+
+  switch (devices[index].kind) {
+
+    case LIGHT:
+
+      state["power"] =
+        deviceStates[index].power;
+
+      state["brightness"] =
+        deviceStates[index].brightness;
+
+      break;
+
+    case DOOR:
+
+      state["open"] =
+        deviceStates[index].open;
+
+      break;
+
+    case FAN:
+
+      state["power"] =
+        deviceStates[index].power;
+
+      state["speed"] =
+        deviceStates[index].speed;
+
+      break;
+
+    case COFFEE_MACHINE:
+
+      state["power"] =
+        deviceStates[index].power;
+
+      state["brewing"] =
+        deviceStates[index].brewing;
+
+      break;
+
+    case TEMPERATURE_SENSOR:
+
+      state["temperature"] =
+        deviceStates[index].temperature;
+
+      break;
+
+    case MOTION_SENSOR:
+
+      state["motion"] =
+        deviceStates[index].motion;
+
+      break;
+
+    case ALARM:
+
+      state["active"] =
+        deviceStates[index].active;
+
+      break;
+
+    case WINDOW:
+
+      state["open"] =
+        deviceStates[index].open;
+
+      break;
+  }
+}
+
+// --------------------------------------------------
+// REAL POST /devices/register
 // --------------------------------------------------
 
 bool registerDevice(
-    size_t deviceIndex
+  size_t index
 ) {
+
   const DeviceConfig& device =
-      devices[deviceIndex];
+    devices[index];
 
   String existingSecret =
-      preferences.getString(
-          device.id,
-          ""
-      );
-
-  if (
-      existingSecret.length() > 0
-  ) {
-    Serial.print(
-        device.id
+    preferences.getString(
+      device.id,
+      ""
     );
 
+  if (
+    existingSecret.length() > 0
+  ) {
+
+    Serial.print(device.id);
+
     Serial.println(
-        ": stored mock secret found, registration skipped"
+      ": stored secret found - registration skipped"
     );
 
     return true;
   }
 
-  Serial.print(
-      "MOCK POST /devices/register -> "
-  );
-
-  Serial.println(
-      device.id
-  );
-
-  // Simulate backend-generated secret.
-  String mockSecret =
-      "mock_secret_";
-
-  mockSecret +=
-      device.id;
-
-  preferences.putString(
-      device.id,
-      mockSecret
-  );
-
-  Serial.print(
-      "Registration status for "
-  );
-
-  Serial.print(
-      device.id
-  );
-
-  Serial.println(
-      ": 200"
-  );
-
-  Serial.print(
-      device.id
-  );
-
-  Serial.println(
-      ": registered and mock secret stored"
-  );
-
-  return true;
-}
-
-void registerMissingDevices() {
-  Serial.println();
-
-  Serial.println(
-      "Checking device registrations"
-  );
-
-  for (
-      size_t index = 0;
-      index < DEVICE_COUNT;
-      index++
-  ) {
-    registerDevice(index);
-
-    delay(100);
+  if (!connectToWiFi()) {
+    return false;
   }
-}
 
-// --------------------------------------------------
-// MOCK: Heartbeat endpoint
-// POST /devices/heartbeat
-// --------------------------------------------------
+  JsonDocument document;
 
-bool sendHeartbeat(
-    size_t deviceIndex
-) {
-  const DeviceConfig& device =
-      devices[deviceIndex];
+  document["id"] =
+    device.id;
 
-  String secret =
-      preferences.getString(
-          device.id,
-          ""
-      );
+  document["name"] =
+    device.name;
 
-  if (
-      secret.length() == 0
-  ) {
-    Serial.print(
-        device.id
+  document["type"] =
+    device.type;
+
+  JsonObject state =
+    document["state"]
+      .to<JsonObject>();
+
+  createRegistrationState(
+    index,
+    state
+  );
+
+  String requestBody;
+
+  serializeJson(
+    document,
+    requestBody
+  );
+
+  WiFiClientSecure client;
+
+  // Required for Wokwi HTTPS simulation.
+  client.setInsecure();
+
+  HTTPClient http;
+
+  String url =
+    makeUrl(
+      "/devices/register"
     );
 
+  if (
+    !http.begin(
+      client,
+      url
+    )
+  ) {
+
     Serial.println(
-        ": heartbeat failed because no secret is stored"
+      "HTTP connection failed"
     );
 
     return false;
   }
 
-  Serial.print(
-      "MOCK POST /devices/heartbeat -> "
+  http.addHeader(
+    "Content-Type",
+    "application/json"
   );
 
   Serial.print(
-      device.id
+    "POST /devices/register -> "
   );
 
   Serial.println(
-      " : 200"
+    device.id
   );
+
+  int statusCode =
+    http.POST(
+      requestBody
+    );
+
+  String response =
+    http.getString();
+
+  Serial.print(
+    "Registration status: "
+  );
+
+  Serial.println(
+    statusCode
+  );
+
+  if (
+    statusCode == 201 ||
+    statusCode == 200
+  ) {
+
+    JsonDocument responseDocument;
+
+    DeserializationError error =
+      deserializeJson(
+        responseDocument,
+        response
+      );
+
+    if (error) {
+
+      Serial.println(
+        "Could not parse registration response"
+      );
+
+      http.end();
+
+      return false;
+    }
+
+    const char* secret =
+      responseDocument["secret"] | "";
+
+    if (
+      strlen(secret) == 0
+    ) {
+
+      Serial.println(
+        "Backend did not return a secret"
+      );
+
+      http.end();
+
+      return false;
+    }
+
+    preferences.putString(
+      device.id,
+      secret
+    );
+
+    Serial.print(
+      device.id
+    );
+
+    Serial.println(
+      ": registered and secret stored"
+    );
+
+    http.end();
+
+    return true;
+  }
+
+  Serial.print(
+    "Registration failed: "
+  );
+
+  Serial.println(
+    response
+  );
+
+  http.end();
+
+  return false;
+}
+
+// --------------------------------------------------
+// Register all missing devices
+// --------------------------------------------------
+
+void registerMissingDevices() {
+
+  Serial.println();
+
+  Serial.println(
+    "Checking device registrations"
+  );
+
+  for (
+    size_t i = 0;
+    i < DEVICE_COUNT;
+    i++
+  ) {
+
+    registerDevice(i);
+
+    delay(150);
+  }
+}
+
+// --------------------------------------------------
+// REAL POST /devices/heartbeat
+// --------------------------------------------------
+
+bool sendHeartbeat(
+  size_t index
+) {
+
+  const DeviceConfig& device =
+    devices[index];
+
+  String secret =
+    preferences.getString(
+      device.id,
+      ""
+    );
+
+  if (
+    secret.length() == 0
+  ) {
+
+    Serial.print(
+      device.id
+    );
+
+    Serial.println(
+      ": heartbeat skipped - no secret"
+    );
+
+    return false;
+  }
+
+  if (!connectToWiFi()) {
+    return false;
+  }
+
+  JsonDocument document;
+
+  document["id"] =
+    device.id;
+
+  document["secret"] =
+    secret;
+
+  String requestBody;
+
+  serializeJson(
+    document,
+    requestBody
+  );
+
+  WiFiClientSecure client;
+
+  client.setInsecure();
+
+  HTTPClient http;
+
+  String url =
+    makeUrl(
+      "/devices/heartbeat"
+    );
+
+  if (
+    !http.begin(
+      client,
+      url
+    )
+  ) {
+
+    return false;
+  }
+
+  http.addHeader(
+    "Content-Type",
+    "application/json"
+  );
+
+  int statusCode =
+    http.POST(
+      requestBody
+    );
+
+  String response =
+    http.getString();
+
+  Serial.print(
+    "POST /devices/heartbeat -> "
+  );
+
+  Serial.print(
+    device.id
+  );
+
+  Serial.print(" : ");
+
+  Serial.println(
+    statusCode
+  );
+
+  if (
+    statusCode < 200 ||
+    statusCode >= 300
+  ) {
+
+    Serial.print(
+      "Heartbeat error: "
+    );
+
+    Serial.println(
+      response
+    );
+
+    http.end();
+
+    return false;
+  }
+
+  http.end();
 
   return true;
 }
 
+// --------------------------------------------------
+// Send heartbeat for all devices
+// --------------------------------------------------
+
 void sendAllHeartbeats() {
+
   Serial.println();
 
   Serial.println(
-      "Sending device heartbeats"
+    "Sending device heartbeats"
   );
 
   for (
-      size_t index = 0;
-      index < DEVICE_COUNT;
-      index++
+    size_t i = 0;
+    i < DEVICE_COUNT;
+    i++
   ) {
-    sendHeartbeat(index);
 
-    delay(100);
+    sendHeartbeat(i);
+
+    delay(150);
   }
 
   Serial.println(
-      "Heartbeat cycle completed"
+    "Heartbeat cycle completed"
   );
 }
 
 // --------------------------------------------------
-// Apply desired state from simulated backend
+// Apply desired backend state
 // --------------------------------------------------
 
 void applyDesiredState(
-    size_t deviceIndex,
-    JsonObject state
+  size_t index,
+  JsonObject state
 ) {
+
   switch (
-      devices[deviceIndex].kind
+    devices[index].kind
   ) {
 
     case LIGHT:
 
       if (
-          !state["power"].isNull()
+        !state["power"].isNull()
       ) {
-        deviceStates[
-            deviceIndex
-        ].power =
-            state["power"]
-                .as<bool>();
+
+        deviceStates[index].power =
+          state["power"]
+            .as<bool>();
       }
 
       if (
-          !state["brightness"].isNull()
+        !state["brightness"].isNull()
       ) {
-        deviceStates[
-            deviceIndex
-        ].brightness =
-            constrain(
-                state["brightness"]
-                    .as<int>(),
-                0,
-                100
-            );
+
+        deviceStates[index].brightness =
+          constrain(
+            state["brightness"]
+              .as<int>(),
+            0,
+            100
+          );
       }
 
       break;
@@ -710,13 +927,12 @@ void applyDesiredState(
     case DOOR:
 
       if (
-          !state["open"].isNull()
+        !state["open"].isNull()
       ) {
-        deviceStates[
-            deviceIndex
-        ].open =
-            state["open"]
-                .as<bool>();
+
+        deviceStates[index].open =
+          state["open"]
+            .as<bool>();
       }
 
       break;
@@ -724,23 +940,21 @@ void applyDesiredState(
     case FAN:
 
       if (
-          !state["power"].isNull()
+        !state["power"].isNull()
       ) {
-        deviceStates[
-            deviceIndex
-        ].power =
-            state["power"]
-                .as<bool>();
+
+        deviceStates[index].power =
+          state["power"]
+            .as<bool>();
       }
 
       if (
-          !state["speed"].isNull()
+        !state["speed"].isNull()
       ) {
-        deviceStates[
-            deviceIndex
-        ].speed =
-            state["speed"]
-                .as<int>();
+
+        deviceStates[index].speed =
+          state["speed"]
+            .as<int>();
       }
 
       break;
@@ -748,23 +962,21 @@ void applyDesiredState(
     case COFFEE_MACHINE:
 
       if (
-          !state["power"].isNull()
+        !state["power"].isNull()
       ) {
-        deviceStates[
-            deviceIndex
-        ].power =
-            state["power"]
-                .as<bool>();
+
+        deviceStates[index].power =
+          state["power"]
+            .as<bool>();
       }
 
       if (
-          !state["brewing"].isNull()
+        !state["brewing"].isNull()
       ) {
-        deviceStates[
-            deviceIndex
-        ].brewing =
-            state["brewing"]
-                .as<bool>();
+
+        deviceStates[index].brewing =
+          state["brewing"]
+            .as<bool>();
       }
 
       break;
@@ -772,13 +984,12 @@ void applyDesiredState(
     case ALARM:
 
       if (
-          !state["active"].isNull()
+        !state["active"].isNull()
       ) {
-        deviceStates[
-            deviceIndex
-        ].active =
-            state["active"]
-                .as<bool>();
+
+        deviceStates[index].active =
+          state["active"]
+            .as<bool>();
       }
 
       break;
@@ -786,13 +997,12 @@ void applyDesiredState(
     case WINDOW:
 
       if (
-          !state["open"].isNull()
+        !state["open"].isNull()
       ) {
-        deviceStates[
-            deviceIndex
-        ].open =
-            state["open"]
-                .as<bool>();
+
+        deviceStates[index].open =
+          state["open"]
+            .as<bool>();
       }
 
       break;
@@ -800,390 +1010,271 @@ void applyDesiredState(
     case TEMPERATURE_SENSOR:
     case MOTION_SENSOR:
 
-      // Sensor states come from Wokwi.
+      // These sensors are read locally.
+      // Sensor reporting to backend is not implemented.
       break;
   }
 }
 
 // --------------------------------------------------
-// Create mock GET /devices/states response
-// --------------------------------------------------
-
-void createMockBackendResponse(
-    JsonDocument& document
-) {
-  JsonArray array =
-      document.to<JsonArray>();
-
-  // Cycle through 4 different demo states.
-  int phase =
-      mockStateStep % 4;
-
-  // ------------------------------------------------
-  // light001
-  // ------------------------------------------------
-
-  JsonObject light1 =
-      array.add<JsonObject>();
-
-  light1["id"] =
-      "light001";
-
-  JsonObject light1State =
-      light1["state"]
-          .to<JsonObject>();
-
-  light1State["power"] =
-      phase == 1 ||
-      phase == 2;
-
-  light1State["brightness"] =
-      phase == 1
-          ? 50
-          : phase == 2
-              ? 100
-              : 0;
-
-  // ------------------------------------------------
-  // light002
-  // ------------------------------------------------
-
-  JsonObject light2 =
-      array.add<JsonObject>();
-
-  light2["id"] =
-      "light002";
-
-  JsonObject light2State =
-      light2["state"]
-          .to<JsonObject>();
-
-  light2State["power"] =
-      phase == 2;
-
-  light2State["brightness"] =
-      phase == 2
-          ? 100
-          : 0;
-
-  // ------------------------------------------------
-  // door001
-  // ------------------------------------------------
-
-  JsonObject door1 =
-      array.add<JsonObject>();
-
-  door1["id"] =
-      "door001";
-
-  JsonObject door1State =
-      door1["state"]
-          .to<JsonObject>();
-
-  door1State["open"] =
-      phase == 2;
-
-  // ------------------------------------------------
-  // door002
-  // ------------------------------------------------
-
-  JsonObject door2 =
-      array.add<JsonObject>();
-
-  door2["id"] =
-      "door002";
-
-  JsonObject door2State =
-      door2["state"]
-          .to<JsonObject>();
-
-  door2State["open"] =
-      phase == 3;
-
-  // ------------------------------------------------
-  // fan001
-  // ------------------------------------------------
-
-  JsonObject fan =
-      array.add<JsonObject>();
-
-  fan["id"] =
-      "fan001";
-
-  JsonObject fanState =
-      fan["state"]
-          .to<JsonObject>();
-
-  fanState["power"] =
-      phase == 1 ||
-      phase == 2;
-
-  fanState["speed"] =
-      phase == 1
-          ? 1
-          : phase == 2
-              ? 3
-              : 0;
-
-  // ------------------------------------------------
-  // coffee001
-  // ------------------------------------------------
-
-  JsonObject coffee =
-      array.add<JsonObject>();
-
-  coffee["id"] =
-      "coffee001";
-
-  JsonObject coffeeState =
-      coffee["state"]
-          .to<JsonObject>();
-
-  coffeeState["power"] =
-      phase == 2;
-
-  coffeeState["brewing"] =
-      phase == 2;
-
-  // ------------------------------------------------
-  // temp001
-  // ------------------------------------------------
-
-  JsonObject temp =
-      array.add<JsonObject>();
-
-  temp["id"] =
-      "temp001";
-
-  JsonObject tempState =
-      temp["state"]
-          .to<JsonObject>();
-
-  tempState["temperature"] =
-      deviceStates[6].temperature;
-
-  // ------------------------------------------------
-  // motion001
-  // ------------------------------------------------
-
-  JsonObject motion =
-      array.add<JsonObject>();
-
-  motion["id"] =
-      "motion001";
-
-  JsonObject motionState =
-      motion["state"]
-          .to<JsonObject>();
-
-  motionState["motion"] =
-      deviceStates[7].motion;
-
-  // ------------------------------------------------
-  // alarm001
-  // ------------------------------------------------
-
-  JsonObject alarm =
-      array.add<JsonObject>();
-
-  alarm["id"] =
-      "alarm001";
-
-  JsonObject alarmState =
-      alarm["state"]
-          .to<JsonObject>();
-
-  alarmState["active"] =
-      phase == 3;
-
-  // ------------------------------------------------
-  // window001
-  // ------------------------------------------------
-
-  JsonObject window =
-      array.add<JsonObject>();
-
-  window["id"] =
-      "window001";
-
-  JsonObject windowState =
-      window["state"]
-          .to<JsonObject>();
-
-  windowState["open"] =
-      phase == 1 ||
-      phase == 2;
-}
-
-// --------------------------------------------------
-// MOCK: GET /devices/states
+// REAL GET /devices/states
 // --------------------------------------------------
 
 bool fetchDesiredStates() {
+
+  if (!connectToWiFi()) {
+    return false;
+  }
+
+  WiFiClientSecure client;
+
+  client.setInsecure();
+
+  HTTPClient http;
+
+  String url =
+    makeUrl(
+      "/devices/states"
+    );
+
+  if (
+    !http.begin(
+      client,
+      url
+    )
+  ) {
+
+    Serial.println(
+      "Could not start GET request"
+    );
+
+    return false;
+  }
+
   Serial.println();
 
   Serial.println(
-      "MOCK GET /devices/states"
+    "GET /devices/states"
+  );
+
+  int statusCode =
+    http.GET();
+
+  String response =
+    http.getString();
+
+  Serial.print(
+    "Device states status: "
   );
 
   Serial.println(
-      "Device states status: 200"
+    statusCode
   );
 
-  JsonDocument responseDocument;
+  if (
+    statusCode < 200 ||
+    statusCode >= 300
+  ) {
 
-  createMockBackendResponse(
-      responseDocument
-  );
+    Serial.print(
+      "GET states error: "
+    );
+
+    Serial.println(
+      response
+    );
+
+    http.end();
+
+    return false;
+  }
+
+  JsonDocument document;
+
+  DeserializationError error =
+    deserializeJson(
+      document,
+      response
+    );
+
+  if (error) {
+
+    Serial.print(
+      "JSON error: "
+    );
+
+    Serial.println(
+      error.c_str()
+    );
+
+    http.end();
+
+    return false;
+  }
+
+  if (
+    !document.is<JsonArray>()
+  ) {
+
+    Serial.println(
+      "Backend response is not an array"
+    );
+
+    http.end();
+
+    return false;
+  }
 
   JsonArray serverDevices =
-      responseDocument
-          .as<JsonArray>();
+    document.as<JsonArray>();
 
   Serial.print(
-      "Received desired states for "
+    "Received "
   );
 
   Serial.print(
-      serverDevices.size()
+    serverDevices.size()
   );
 
   Serial.println(
-      " devices"
+    " backend devices"
   );
 
   for (
-      JsonVariant item :
-      serverDevices
+    JsonVariant item :
+    serverDevices
   ) {
+
     const char* deviceId =
-        item["id"] | "";
+      item["id"] | "";
 
-    int deviceIndex =
-        findDeviceIndex(
-            deviceId
-        );
+    int index =
+      findDeviceIndex(
+        deviceId
+      );
 
+    // Ignore backend devices that do not belong
+    // to this Wokwi simulation.
     if (
-        deviceIndex < 0
+      index < 0
     ) {
+
       continue;
     }
 
     JsonObject state =
-        item["state"]
-            .as<JsonObject>();
+      item["state"]
+        .as<JsonObject>();
 
     applyDesiredState(
-        static_cast<size_t>(
-            deviceIndex
-        ),
-        state
+      index,
+      state
     );
 
     Serial.print(
-        "Updated desired state: "
+      "Updated desired state: "
     );
 
     Serial.println(
-        deviceId
+      deviceId
     );
   }
 
   applyDeviceStates();
 
-  mockStateStep++;
+  http.end();
 
   return true;
 }
 
 // --------------------------------------------------
-// Print current states
+// Print states
 // --------------------------------------------------
 
 void printCurrentStates() {
+
   Serial.println(
-      "Current simulated states:"
+    "Current simulated states:"
   );
 
   Serial.print(
-      "light001 power: "
+    "light001: "
   );
 
   Serial.println(
-      deviceStates[0].power
-          ? "ON"
-          : "OFF"
+    deviceStates[0].power
+      ? "ON"
+      : "OFF"
   );
 
   Serial.print(
-      "light002 power: "
+    "light002: "
   );
 
   Serial.println(
-      deviceStates[1].power
-          ? "ON"
-          : "OFF"
+    deviceStates[1].power
+      ? "ON"
+      : "OFF"
   );
 
   Serial.print(
-      "door001: "
+    "door001: "
   );
 
   Serial.println(
-      deviceStates[2].open
-          ? "OPEN"
-          : "CLOSED"
+    deviceStates[2].open
+      ? "OPEN"
+      : "CLOSED"
   );
 
   Serial.print(
-      "door002: "
+    "door002: "
   );
 
   Serial.println(
-      deviceStates[3].open
-          ? "OPEN"
-          : "CLOSED"
+    deviceStates[3].open
+      ? "OPEN"
+      : "CLOSED"
   );
 
   Serial.print(
-      "fan001: "
+    "fan001: "
   );
 
   Serial.println(
-      deviceStates[4].power
-          ? "ON"
-          : "OFF"
+    deviceStates[4].power
+      ? "ON"
+      : "OFF"
   );
 
   Serial.print(
-      "coffee001: "
+    "coffee001: "
   );
 
   Serial.println(
-      deviceStates[5].brewing
-          ? "BREWING"
-          : "OFF"
+    deviceStates[5].brewing
+      ? "BREWING"
+      : "OFF"
   );
 
   Serial.print(
-      "alarm001: "
+    "alarm001: "
   );
 
   Serial.println(
-      deviceStates[8].active
-          ? "ACTIVE"
-          : "OFF"
+    deviceStates[8].active
+      ? "ACTIVE"
+      : "OFF"
   );
 
   Serial.print(
-      "window001: "
+    "window001: "
   );
 
   Serial.println(
-      deviceStates[9].open
-          ? "OPEN"
-          : "CLOSED"
+    deviceStates[9].open
+      ? "OPEN"
+      : "CLOSED"
   );
 
   Serial.println();
@@ -1194,8 +1285,9 @@ void printCurrentStates() {
 // --------------------------------------------------
 
 void setup() {
+
   Serial.begin(
-      115200
+    115200
   );
 
   delay(500);
@@ -1203,27 +1295,37 @@ void setup() {
   Serial.println();
 
   Serial.println(
-      "SmartHouse IoT starting"
+    "SmartHouse IoT starting"
   );
 
   Serial.println(
-      "Backend mode: MOCK"
+    "Backend mode: REAL"
   );
 
-  initializeDeviceStates();
+  Serial.print(
+    "Backend URL: "
+  );
+
+  Serial.println(
+    BACKEND_BASE_URL
+  );
 
   setupHardware();
 
   applyDeviceStates();
 
+  /*
+   * Different namespace from the old mock backend.
+   * This prevents old mock secrets from being reused.
+   */
   preferences.begin(
-      "smarthouse",
-      false
+    "smarthouse-real",
+    false
   );
 
   /*
-   * Uncomment once if you want to delete
-   * all previously stored mock secrets.
+   * Only uncomment this if you need to erase
+   * all stored REAL backend secrets.
    */
   // preferences.clear();
 
@@ -1231,27 +1333,27 @@ void setup() {
 
   readSensors();
 
-  // Wi-Fi is still demonstrated,
-  // but mock endpoints do not depend on
-  // an external backend server.
-  connectToWiFi();
+  if (
+    connectToWiFi()
+  ) {
 
-  registerMissingDevices();
+    registerMissingDevices();
 
-  sendAllHeartbeats();
+    sendAllHeartbeats();
 
-  fetchDesiredStates();
+    fetchDesiredStates();
+  }
 
   printCurrentStates();
 
   lastHeartbeatTime =
-      millis();
+    millis();
 
   lastStatePollTime =
-      millis();
+    millis();
 
   lastSensorReadTime =
-      millis();
+    millis();
 }
 
 // --------------------------------------------------
@@ -1259,43 +1361,47 @@ void setup() {
 // --------------------------------------------------
 
 void loop() {
-  unsigned long currentTime =
-      millis();
 
-  // Read physical/simulated sensors every 2 seconds.
+  unsigned long currentTime =
+    millis();
+
+  // Sensors every 2 seconds
   if (
-      currentTime -
+    currentTime -
       lastSensorReadTime >=
-      SENSOR_INTERVAL_MS
+    SENSOR_INTERVAL_MS
   ) {
+
     lastSensorReadTime =
-        currentTime;
+      currentTime;
 
     readSensors();
   }
 
-  // Mock GET /devices/states every 3 seconds.
+  // Backend states every 3 seconds
   if (
-      currentTime -
+    currentTime -
       lastStatePollTime >=
-      STATE_POLL_INTERVAL_MS
+    STATE_POLL_INTERVAL_MS
   ) {
+
     lastStatePollTime =
-        currentTime;
+      currentTime;
 
     fetchDesiredStates();
 
     printCurrentStates();
   }
 
-  // Mock heartbeat every 30 seconds.
+  // Heartbeat every 30 seconds
   if (
-      currentTime -
+    currentTime -
       lastHeartbeatTime >=
-      HEARTBEAT_INTERVAL_MS
+    HEARTBEAT_INTERVAL_MS
   ) {
+
     lastHeartbeatTime =
-        currentTime;
+      currentTime;
 
     sendAllHeartbeats();
   }
