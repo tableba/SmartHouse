@@ -5,7 +5,7 @@ import {
   getDevice,
   registerDevice,
   heartBeat,
-  updateDevice,
+  updateState,
   deleteDevice
 } from '../controllers/devicesController.js';
 
@@ -28,7 +28,7 @@ router.delete('/devices/:id',
   deleteDevice);
 router.put('/devices/:id',
   authenticateUser,
-  updateDevice);
+  updateState);
 
 // unprotected
 router.post('/devices/register', registerDevice);
