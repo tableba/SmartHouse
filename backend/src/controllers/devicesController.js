@@ -344,3 +344,46 @@ export const updateDevice = async (req, res, next) => {
     );
   }
 };
+
+export const updateState = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    const deviceRef = doc(db, 'devices', id);
+    const snapshot = await getDoc(deviceRef);
+
+    if (!snapshot.exists()) {
+      return res.status(404).json({
+        message: 'Device not found'
+      });
+    }
+
+    const { state } = req.body;
+
+    // State must be an object
+    if (
+      state === undefined ||
+      state === null ||
+      typeof state !== 'object' ||
+      Array.isArray(state)
+    ) {
+      return res.status(400).json({
+        message: 'Invalid state'
+      });
+    }
+
+    await updateDoc(deviceRef, {
+      state: state,
+      lastModified: new Date().toISOString()
+    });
+
+    return res.status(200).json({
+      message: 'device state updated successfully'
+    });
+
+  } catch (error) {
+    return res.status(500).json({
+      message: error.message
+    });
+  }
+};

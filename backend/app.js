@@ -14,7 +14,7 @@ import { db } from './src/firebase.js';
 
 
 const app = express();
-const TIMEOUT = 40000; // 30 seconds
+const TIMEOUT = 80000; // 1 min
 
 app.use(cors());
 app.use(express.json());
