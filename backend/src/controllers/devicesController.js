@@ -15,22 +15,33 @@ import {
 export const createDevice = async (req, res, next) => {
   try {
     const device = Device.create(req.body);
-    await setDoc(doc(db, "devices", device.id), device.toJSON());
+
+    await setDoc(
+      doc(db, "devices", device.id),
+      device.toJSON()
+    );
+
     res.status(200).json({
       message: "device added to database sucessfully",
       secret: device.secret
     });
+
   } catch (error) {
     res.status(400).send(error.message);
   }
 };
 
+
 export const getDevices = async (req, res, next) => {
   try {
-    const snapshot = await getDocs(collection(db, "devices"));
+    const snapshot = await getDocs(
+      collection(db, "devices")
+    );
 
     if (snapshot.empty) {
-      return res.status(404).json({ message: "No devices found" });
+      return res.status(404).json({
+        message: "No devices found"
+      });
     }
 
     const deviceArray = [];
@@ -53,24 +64,34 @@ export const getDevices = async (req, res, next) => {
     });
 
     return res.status(200).json(deviceArray);
+
   } catch (error) {
     return res.status(500).json({
       message: error.message
     });
   }
-}
+};
+
 
 export const getDevice = async (req, res, next) => {
   try {
-    const { id } = req.params
-    const deviceRef = doc(db, "devices", id)
+    const { id } = req.params;
+
+    const deviceRef = doc(
+      db,
+      "devices",
+      id
+    );
+
     const snapshot = await getDoc(deviceRef);
 
     if (!snapshot.exists()) {
-      return res.status(404).json({ message: "No device found" });
+      return res.status(404).json({
+        message: "No device found"
+      });
     }
 
-    const data = snapshot.data()
+    const data = snapshot.data();
 
     const device = new Device({
       id: id,
@@ -83,20 +104,30 @@ export const getDevice = async (req, res, next) => {
       lastSeen: data.lastSeen
     });
 
-    return res.status(200).json(device.toJSON());
+    return res.status(200).json(
+      device.toJSON()
+    );
 
   } catch (error) {
     return res.status(500).json({
       message: error.message
     });
   }
-}
+};
+
 
 export const authentificateDevice = async (req, res, next) => {
   // authentificates devices and makes it "online"
+
   try {
     const { id, secret } = req.body;
-    const deviceRef = doc(db, "devices", id);
+
+    const deviceRef = doc(
+      db,
+      "devices",
+      id
+    );
+
     const snapshot = await getDoc(deviceRef);
 
     if (!snapshot.exists()) {
@@ -130,10 +161,17 @@ export const authentificateDevice = async (req, res, next) => {
   }
 };
 
+
 export const heartBeat = async (req, res, next) => {
   try {
     const { id, secret } = req.body;
-    const deviceRef = doc(db, "devices", id);
+
+    const deviceRef = doc(
+      db,
+      "devices",
+      id
+    );
+
     const snapshot = await getDoc(deviceRef);
 
     if (!snapshot.exists()) {
@@ -153,29 +191,39 @@ export const heartBeat = async (req, res, next) => {
     await updateDoc(deviceRef, {
       status: "online",
       lastSeen: new Date().toISOString()
-    })
-    
-    return res.status(200).json({ message: "heartbeat ok" })
+    });
+
+    return res.status(200).json({
+      message: "heartbeat ok"
+    });
 
   } catch (error) {
     return res.status(500).json({
       message: error.message
     });
   }
-}
+};
+
 
 // combine auth and adding device to db
 export const registerDevice = async (req, res) => {
   try {
     const { id, secret } = req.body;
 
-    const deviceRef = doc(db, "devices", id);
+    const deviceRef = doc(
+      db,
+      "devices",
+      id
+    );
+
     const snapshot = await getDoc(deviceRef);
 
     // device does not exist in db (based on id)
     if (!snapshot.exists()) {
 
-      const device = Device.create(req.body);
+      const device = Device.create(
+        req.body
+      );
 
       await setDoc(
         deviceRef,
@@ -194,9 +242,9 @@ export const registerDevice = async (req, res) => {
       });
     }
 
-      return res.status(401).json({
-        message: "Device with that id already exists."
-      });
+    return res.status(401).json({
+      message: "Device with that id already exists."
+    });
 
   } catch (error) {
     return res.status(500).json({
@@ -208,59 +256,92 @@ export const registerDevice = async (req, res) => {
 
 export const deleteDevice = async (req, res, next) => {
   try {
+    const { id } = req.params;
 
-    const { id } = req.params
-    const deviceRef = doc(db, "devices", id)
+    const deviceRef = doc(
+      db,
+      "devices",
+      id
+    );
+
     const snapshot = await getDoc(deviceRef);
 
     if (!snapshot.exists()) {
-      return res.status(404).json({ message: "Device not found" });
+      return res.status(404).json({
+        message: "Device not found"
+      });
     }
 
-    await deleteDoc(doc(db, "devices", id));
+    await deleteDoc(
+      doc(db, "devices", id)
+    );
+
     res.status(200).json({
       message: "device removed from the database sucessfully",
     });
+
   } catch (error) {
-    res.status(500).send(error.message);
+    res.status(500).send(
+      error.message
+    );
   }
 };
 
+
 export const updateDevice = async (req, res, next) => {
   // can only updatee name and type!
+
   try {
-    const { id } = req.params
-    const deviceRef = doc(db, "devices", id)
+    const { id } = req.params;
+
+    const deviceRef = doc(
+      db,
+      "devices",
+      id
+    );
+
     const snapshot = await getDoc(deviceRef);
 
     if (!snapshot.exists()) {
-      return res.status(404).json({ message: "Device not found" });
+      return res.status(404).json({
+        message: "Device not found"
+      });
     }
 
-    const updates = req.body
+    const updates = req.body;
 
-    if (updates.name && typeof updates.name !== "string") {
+    if (
+      updates.name &&
+      typeof updates.name !== "string"
+    ) {
       return res.status(400).json({
         message: "Invalid name"
       });
     }
 
-    if (updates.type && !Device.isValidType(updates.type)) {
+    if (
+      updates.type &&
+      !Device.isValidType(updates.type)
+    ) {
       return res.status(400).json({
         message: "Invalid type"
       });
     }
 
     await updateDoc(deviceRef, {
-      ... updates,
-      lastModified: new Date().toISOString()
+      ...updates,
+      lastModified:
+        new Date().toISOString()
     });
 
     res.status(200).json({
       message: "device updated sucessfully",
     });
+
   } catch (error) {
-    res.status(500).send(error.message);
+    res.status(500).send(
+      error.message
+    );
   }
 };
 
